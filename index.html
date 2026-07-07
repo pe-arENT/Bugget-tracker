@@ -130,6 +130,18 @@
   .backuphint.ok { color: #5B7A5D; font-weight: 500; }
   .backuphint.err { color: #B0564A; font-weight: 500; }
 
+  /* slip scan (OCR) */
+  .scanbtn { width: 100%; display: flex; align-items: center; justify-content: center; gap: 7px; background: #EFEAF7; border: 1px dashed #A98CC9; color: #6B4FA0; border-radius: 10px; padding: 10px; font-size: 13px; font-weight: 500; cursor: pointer; margin-top: 2px; }
+  .scanbtn svg { width: 16px; height: 16px; }
+  .scanbtn:hover { background: #E6DEF3; }
+  .scanbtn:disabled { opacity: .55; cursor: default; }
+  .scanbtn.busy svg { animation: spin 1s linear infinite; }
+  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  .scanhint { font-size: 11px; color: #A39C8C; text-align: center; margin-top: 6px; min-height: 14px; }
+  .scanhint.ok { color: #5B7A5D; font-weight: 500; }
+  .scanhint.err { color: #B0564A; font-weight: 500; }
+  .scanhint.busy { color: #6B4FA0; font-weight: 500; }
+
   /* insurance alert banner */
   .insalert { border-radius: 12px; padding: 13px 15px; margin-bottom: 16px; display: flex; align-items: center; gap: 12px; }
   .insalert .ico { width: 34px; height: 34px; border-radius: 9px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
@@ -191,6 +203,12 @@
     <div class="section">
       <div class="sechead"><span class="dot d-expense"></span><h2>รายจ่าย</h2><span class="count" id="expCount"></span></div>
       <div id="expenseList"></div>
+      <button class="scanbtn" id="scanSlipBtn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>
+        สแกนสลิป (อ่านยอดอัตโนมัติ)
+      </button>
+      <input type="file" id="slipInput" accept="image/*" style="display:none">
+      <div class="scanhint" id="scanHint"></div>
     </div>
 
     <div class="tracker" id="carLoan"></div>
@@ -254,6 +272,7 @@
   </button>
 </nav>
 
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script>
 "use strict";
 
@@ -340,6 +359,7 @@ function getMonth(key) {
   if (!m.savings) m.savings = {};
   if (!m.expCustom) m.expCustom = [];
   if (!m.incCustom) m.incCustom = [];
+  if (!m.savCustom) m.savCustom = [];
   INCOME_ITEMS.forEach(n => { if (!(n in m.income)) m.income[n] = def.income[n]; });
   EXPENSE_ITEMS.forEach(it => { if (!m.expenses[it.name]) m.expenses[it.name] = def.expenses[it.name]; });
   SAVING_ITEMS.forEach(it => { if (!m.savings[it.name]) m.savings[it.name] = def.savings[it.name]; });
@@ -358,6 +378,7 @@ async function load() {
   if (!data.months) data.months = {};
   if (data.carInstallment == null) data.carInstallment = 14;
   if (!data.insPaid) data.insPaid = {};
+  if (!data.customInsurance) data.customInsurance = [];
   applySeed();
   migrateSeed();
 }
@@ -379,6 +400,7 @@ function seedMonth(key, spec) {
     income: inc, expenses: exp, savings: sav,
     expCustom: (spec.custom || []).map((c, i) => ({ id: key + "-c" + i, name: c[0], amt: c[1], done: true })),
     incCustom: (spec.incCustom || []).map((c, i) => ({ id: key + "-ic" + i, name: c[0], amt: c[1] })),
+    savCustom: (spec.savCustom || []).map((c, i) => ({ id: key + "-sc" + i, name: c[0], amt: c[1], done: true })),
   };
 }
 function applySeed() {
@@ -513,6 +535,7 @@ function calcMonth(key) {
   EXPENSE_ITEMS.forEach(it => { const c = m.expenses[it.name]; if (c) { exp += (+c.amt || 0); expTotal++; if (c.done) expDone++; } });
   (m.expCustom || []).forEach(c => { exp += (+c.amt || 0); expTotal++; if (c.done) expDone++; });
   SAVING_ITEMS.forEach(it => { const c = m.savings[it.name]; if (c) { sav += (+c.amt || 0); savTotal++; if (c.done) savDone++; } });
+  (m.savCustom || []).forEach(c => { sav += (+c.amt || 0); savTotal++; if (c.done) savDone++; });
   return { inc, exp, sav, bal: inc - exp - sav, expDone, expTotal, savDone, savTotal };
 }
 function updateSummary() {
@@ -660,9 +683,37 @@ function renderSavings() {
     input.addEventListener("change", save);
     host.appendChild(row);
   });
-}
 
-/* ---------- car loan (auto-count per month) ---------- */
+  // เงินออม/ลงทุนพิเศษ (custom rows)
+  m.savCustom.forEach((c, idx) => {
+    const row = document.createElement("div");
+    row.className = "item custom";
+    row.innerHTML =
+      '<div class="chk' + (c.done ? " on" : "") + '">' + checkSvg() + '</div>' +
+      '<div class="iteminfo"><input class="cname" placeholder="ชื่อเงินออม/ลงทุน" value="' + (c.name ? esc(c.name) : "") + '"></div>' +
+      '<div class="amtbox"><input class="amt num" inputmode="decimal" placeholder="0" value="' + (c.amt == null ? "" : c.amt) + '"><span class="cur">฿</span></div>' +
+      '<button class="delrow" title="ลบ">&times;</button>';
+    const chk = row.querySelector(".chk");
+    chk.addEventListener("click", () => { c.done = !c.done; chk.classList.toggle("on", c.done); updateSummary(); save(); });
+    const nameInp = row.querySelector(".cname");
+    nameInp.addEventListener("input", () => { c.name = nameInp.value; });
+    nameInp.addEventListener("change", save);
+    const amtInp = row.querySelector(".amt");
+    amtInp.addEventListener("input", () => { c.amt = amtInp.value === "" ? null : parseFloat(amtInp.value); updateSummary(); });
+    amtInp.addEventListener("change", save);
+    row.querySelector(".delrow").addEventListener("click", () => { m.savCustom.splice(idx, 1); save(); renderSavings(); updateSummary(); });
+    host.appendChild(row);
+  });
+
+  const addBtn = document.createElement("button");
+  addBtn.className = "addrow";
+  addBtn.innerHTML = "+ เพิ่มเงินออม/การลงทุน";
+  addBtn.addEventListener("click", () => {
+    m.savCustom.push({ id: curKey + "-sc" + Date.now(), name: "", amt: null, done: false });
+    save(); renderSavings();
+  });
+  host.appendChild(addBtn);
+}
 function monthsBetween(a, b) {
   const pa = keyToParts(a), pb = keyToParts(b);
   return (pb.y - pa.y) * 12 + (pb.m - pa.m);
@@ -744,6 +795,57 @@ function renderInsurance() {
     });
     host.appendChild(card);
   });
+
+  // ประกันที่เพิ่มเอง (custom)
+  data.customInsurance.forEach((it, idx) => {
+    let dueCls = "due-ok", dueTxt, cardCls = "ins";
+    if (it.done) { dueCls = "due-paid"; dueTxt = "จ่ายแล้ว ✓"; }
+    else if (it.dueDate) {
+      const days = daysUntil(it.dueDate);
+      if (days < 0) { dueCls = "due-soon"; dueTxt = "เลยกำหนด " + Math.abs(days) + " วัน"; cardCls = "ins due-red"; }
+      else if (days <= 30) { dueCls = "due-soon"; dueTxt = "อีก " + days + " วัน"; cardCls = "ins due-red"; }
+      else if (days <= 45) { dueCls = "due-soon"; dueTxt = "อีก " + days + " วัน"; cardCls = "ins due-amber"; }
+      else { dueTxt = "อีก " + days + " วัน"; }
+    } else {
+      dueTxt = "ยังไม่ตั้งวันครบกำหนด";
+    }
+    const card = document.createElement("div");
+    card.className = cardCls;
+    card.innerHTML =
+      '<div class="insrow">' +
+      '<div class="chk' + (it.done ? " on" : "") + '">' + checkSvg() + '</div>' +
+      '<div class="insinfo">' +
+        '<input class="cname" placeholder="ชื่อประกัน" value="' + (it.name ? esc(it.name) : "") + '" style="margin-bottom:5px">' +
+        '<input type="date" class="cdate" value="' + (it.dueDate || "") + '">' +
+      '</div>' +
+      '<div style="text-align:right">' +
+        '<div class="amtbox" style="justify-content:flex-end;margin-bottom:5px"><input class="amt num camt" inputmode="decimal" placeholder="0" value="' + (it.amount == null ? "" : it.amount) + '"><span class="cur">฿</span></div>' +
+        '<div class="insdue ' + dueCls + '">' + dueTxt + '</div>' +
+      '</div>' +
+      '<button class="delrow" title="ลบ">&times;</button>' +
+      '</div>';
+    const chk = card.querySelector(".chk");
+    chk.addEventListener("click", () => { it.done = !it.done; save(); renderInsurance(); renderInsAlert(); });
+    const nameInp = card.querySelector(".cname");
+    nameInp.addEventListener("input", () => { it.name = nameInp.value; });
+    nameInp.addEventListener("change", () => { save(); renderInsAlert(); });
+    const dateInp = card.querySelector(".cdate");
+    dateInp.addEventListener("change", () => { it.dueDate = dateInp.value; save(); renderInsurance(); renderInsAlert(); });
+    const amtInp = card.querySelector(".camt");
+    amtInp.addEventListener("input", () => { it.amount = amtInp.value === "" ? null : parseFloat(amtInp.value); });
+    amtInp.addEventListener("change", () => { save(); renderInsAlert(); });
+    card.querySelector(".delrow").addEventListener("click", () => { data.customInsurance.splice(idx, 1); save(); renderInsurance(); renderInsAlert(); });
+    host.appendChild(card);
+  });
+
+  const addBtn = document.createElement("button");
+  addBtn.className = "addrow";
+  addBtn.innerHTML = "+ เพิ่มประกันอื่นๆ";
+  addBtn.addEventListener("click", () => {
+    data.customInsurance.push({ id: "ci" + Date.now(), name: "", amount: null, dueDate: "", done: false });
+    save(); renderInsurance();
+  });
+  host.appendChild(addBtn);
 }
 
 /* ---------- insurance alert banner ---------- */
@@ -754,13 +856,21 @@ function renderInsAlert() {
     const nd = nextInsDue(it);
     if (nd.paid) return;
     const days = daysUntil(nd.dueStr);
-    if (next === null || days < next.days) next = { it, nd, days };
+    if (next === null || days < next.days) {
+      next = { name: it.name, amount: it.amount, days, dueStr: nd.dueStr, extra: 'งวด ' + nd.installment + '/' + it.total + ' • ' };
+    }
+  });
+  data.customInsurance.forEach(it => {
+    if (it.done || !it.dueDate) return;
+    const days = daysUntil(it.dueDate);
+    if (next === null || days < next.days) {
+      next = { name: it.name || "ประกัน (ไม่มีชื่อ)", amount: it.amount || 0, days, dueStr: it.dueDate, extra: "" };
+    }
   });
   if (!next) { host.innerHTML = ""; return; }
+  if (next.days > 90) { host.innerHTML = ""; return; }
 
-  const { it, nd, days } = next;
-  if (days > 90) { host.innerHTML = ""; return; }
-
+  const days = next.days;
   let cls, t1, daysTxt, daysLbl;
   if (days < 0) { cls = "alert-red"; t1 = "เลยกำหนดจ่ายประกันแล้ว!"; daysTxt = Math.abs(days); daysLbl = "วันที่เลยมา"; }
   else if (days <= 30) { cls = "alert-red"; t1 = "ใกล้ถึงวันจ่ายประกันแล้ว"; daysTxt = days; daysLbl = "วันที่เหลือ"; }
@@ -771,7 +881,7 @@ function renderInsAlert() {
     '<div class="insalert ' + cls + '">' +
     '<div class="ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>' +
     '<div class="txt"><div class="t1">' + t1 + '</div>' +
-    '<div class="t2">' + esc(it.name) + ' • ' + fmt(it.amount) + ' ฿ • งวด ' + nd.installment + '/' + it.total + ' • ครบกำหนด ' + thaiDate(nd.dueStr) + '</div></div>' +
+    '<div class="t2">' + esc(next.name) + ' • ' + fmt(next.amount) + ' ฿ • ' + next.extra + 'ครบกำหนด ' + thaiDate(next.dueStr) + '</div></div>' +
     '<div class="days"><b class="num">' + daysTxt + '</b><span>' + daysLbl + '</span></div></div>';
 }
 
@@ -880,12 +990,19 @@ function renderIncomeOverview() {
 /* ---------- cumulative savings (done only) ---------- */
 function renderCumulative() {
   const totals = {}; SAVING_ITEMS.forEach(it => totals[it.name] = 0);
+  const customTotals = {};
   let grand = 0;
   Object.values(data.months).forEach(m => {
-    if (!m.savings) return;
-    SAVING_ITEMS.forEach(it => {
-      const c = m.savings[it.name];
-      if (c && c.done) { totals[it.name] += (+c.amt || 0); grand += (+c.amt || 0); }
+    if (m.savings) {
+      SAVING_ITEMS.forEach(it => {
+        const c = m.savings[it.name];
+        if (c && c.done) { totals[it.name] += (+c.amt || 0); grand += (+c.amt || 0); }
+      });
+    }
+    (m.savCustom || []).forEach(c => {
+      if (!c.done || !c.name) return;
+      customTotals[c.name] = (customTotals[c.name] || 0) + (+c.amt || 0);
+      grand += (+c.amt || 0);
     });
   });
   const host = document.getElementById("cumList");
@@ -900,6 +1017,9 @@ function renderCumulative() {
       }
       html += '<div class="cumrow" style="display:block"><div style="display:flex;justify-content:space-between"><span>' + esc(it.name) + '</span><span class="v num">' + fmt(totals[it.name]) + ' ฿</span></div>' + goalTxt + '</div>';
     }
+  });
+  Object.keys(customTotals).forEach(name => {
+    if (customTotals[name] > 0) html += '<div class="cumrow"><span>' + esc(name) + '</span><span class="v num">' + fmt(customTotals[name]) + ' ฿</span></div>';
   });
   if (!html) html = '<div class="cumrow" style="color:#A39C8C">ติ๊ก "ออมแล้ว" ในแต่ละเดือน แล้วยอดสะสมจะมาโชว์ตรงนี้</div>';
   html += '<div class="cumrow cumtotal"><span>รวมทั้งหมด</span><span class="v num">' + fmt(grand) + ' ฿</span></div>';
@@ -921,6 +1041,73 @@ document.getElementById("prevM").addEventListener("click", () => {
 });
 document.getElementById("nextM").addEventListener("click", () => {
   curKey = shiftKey(curKey, 1); renderAll();
+});
+
+/* ---------- slip scan (OCR, client-side) ---------- */
+let ocrWorker = null;
+function scanHint(msg, cls) {
+  const el = document.getElementById("scanHint");
+  el.textContent = msg;
+  el.className = "scanhint" + (cls ? " " + cls : "");
+}
+function extractAmountFromText(text) {
+  const lines = text.split(/\n/);
+  const amountRegex = /(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)/g;
+  const candidates = [];
+  lines.forEach(line => {
+    const hasKeyword = /บาท|จำนวนเงิน|จำนวน|amount|thb|รวม/i.test(line);
+    let m;
+    while ((m = amountRegex.exec(line)) !== null) {
+      const val = parseFloat(m[1].replace(/,/g, ""));
+      if (!isNaN(val) && val > 0) candidates.push({ val, hasKeyword });
+    }
+  });
+  if (!candidates.length) return null;
+  const keyworded = candidates.filter(c => c.hasKeyword);
+  const pool = keyworded.length ? keyworded : candidates;
+  pool.sort((a, b) => b.val - a.val);
+  return pool[0].val;
+}
+document.getElementById("scanSlipBtn").addEventListener("click", () => {
+  document.getElementById("slipInput").click();
+});
+document.getElementById("slipInput").addEventListener("change", async (e) => {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
+  if (typeof Tesseract === "undefined") {
+    scanHint("โหลดตัวอ่านสลิปไม่สำเร็จ ต้องมีอินเทอร์เน็ตตอนสแกนครั้งแรก", "err");
+    return;
+  }
+  const btn = document.getElementById("scanSlipBtn");
+  btn.disabled = true;
+  btn.classList.add("busy");
+  scanHint("กำลังอ่านสลิป... อาจใช้เวลาสักครู่ (ครั้งแรกช้ากว่าปกติ)", "busy");
+  try {
+    if (!ocrWorker) ocrWorker = await Tesseract.createWorker("tha+eng");
+    const { data: { text } } = await ocrWorker.recognize(file);
+    const amount = extractAmountFromText(text);
+    const m = getMonth(curKey);
+    m.expCustom.push({
+      id: curKey + "-slip" + Date.now(),
+      name: "รายการจากสลิป",
+      amt: amount,
+      done: false,
+    });
+    save();
+    renderExpenses();
+    updateSummary();
+    if (amount != null) {
+      scanHint("อ่านยอดได้ " + fmt(amount) + " ฿ — เพิ่มเป็นรายจ่ายแล้ว กรุณาตรวจสอบก่อนติ๊กว่าจ่ายแล้ว", "ok");
+    } else {
+      scanHint("อ่านสลิปไม่พบยอดเงินชัดเจน เพิ่มรายการว่างให้แล้ว กรุณากรอกยอดเอง", "err");
+    }
+  } catch (err) {
+    scanHint("อ่านสลิปไม่สำเร็จ ลองถ่ายรูปให้ชัดขึ้นแล้วลองใหม่", "err");
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove("busy");
+  }
 });
 
 /* ---------- backup: export / import ---------- */
